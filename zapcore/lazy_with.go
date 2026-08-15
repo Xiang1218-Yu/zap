@@ -23,32 +23,55 @@ package zapcore
 import "sync"
 
 type lazyWithCore struct {
-	Core
+	core         Core
+	originalCore Core
 	sync.Once
 	fields []Field
 }
 
 // NewLazyWith wraps a Core with a "lazy" Core that will only encode fields if
-// the logger is written to (or is further chained in a lon-lazy manner).
+// the logger is written to (or is further chained in a non-lazy manner).
 func NewLazyWith(core Core, fields []Field) Core {
 	return &lazyWithCore{
-		Core:   core,
-		fields: fields,
+		core:         nil, // core is allocated once `initOnce` is called.
+		originalCore: core,
+		fields:       fields,
 	}
 }
 
 func (d *lazyWithCore) initOnce() {
 	d.Once.Do(func() {
-		d.Core = d.Core.With(d.fields)
+		d.core = d.originalCore.With(d.fields)
 	})
 }
 
 func (d *lazyWithCore) With(fields []Field) Core {
 	d.initOnce()
-	return d.Core.With(fields)
+	return d.core.With(fields)
 }
 
 func (d *lazyWithCore) Check(e Entry, ce *CheckedEntry) *CheckedEntry {
+	// This is safe because `lazyWithCore` doesn't change the level.
+	// So we can delegate the level check, and not `initOnce`
+	// just for the check.
+	if !d.originalCore.Enabled(e.Level) {
+		return ce
+	}
 	d.initOnce()
-	return d.Core.Check(e, ce)
+	return d.core.Check(e, ce)
+}
+
+func (d *lazyWithCore) Enabled(level Level) bool {
+	// Like above, this is safe because `lazyWithCore` doesn't change the level.
+	return d.originalCore.Enabled(level)
+}
+
+func (d *lazyWithCore) Write(e Entry, fields []Field) error {
+	d.initOnce()
+	return d.core.Write(e, fields)
+}
+
+func (d *lazyWithCore) Sync() error {
+	d.initOnce()
+	return d.core.Sync()
 }
